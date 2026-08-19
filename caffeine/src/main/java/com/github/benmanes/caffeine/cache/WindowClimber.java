@@ -58,10 +58,6 @@ final class WindowClimber {
   static final double RESTART_THRESHOLD = 0.05d;
   /** The samples a retreat's cover spans: the stride commanded now, and the sample it lands on. */
   static final int RETREAT_COVER = 2;
-  /** The samples a veto holds and re-samples before it commits the retreat. */
-  static final int SIGHTED_HOLD_SAMPLES = 2;
-  /** The on-anchor settle samples before the arrival retest judges the retreat's claim. */
-  static final int SIGHTED_ARRIVE_SETTLE = 2;
 
   final ReactiveClimber reactive;
   final DensityClimber density;
@@ -79,12 +75,6 @@ final class WindowClimber {
   int refractoryLeft;
   int retreatLeft;
   long adjustment;
-
-  int sightedHoldLeft;
-  int sightedArriveLeft;
-  double sightedArriveClaim;
-  int sightedShortfallStreak;
-  boolean sightedArrivePending;
 
   public WindowClimber() {
     step = new Step();
@@ -105,12 +95,6 @@ final class WindowClimber {
     retreatLeft = 0;
     adjustment = 0;
     walk = null;
-
-    sightedHoldLeft = 0;
-    sightedArriveLeft = 0;
-    sightedArriveClaim = 0;
-    sightedShortfallStreak = 0;
-    sightedArrivePending = false;
 
     audit.reset();
     rates.reset();
@@ -206,16 +190,15 @@ final class WindowClimber {
       return density.steer(reading.steeringError(), reading);
     } else if (hasPendingUndo()) {
       return undoStride(reading);
-    } else if (sightedHoldActive()) {
-      return sightedHoldStep(reading, rates);
     } else if (anchor.returning) {
       return strideHome(reading);
-    } else if (sightedArriveActive(reading)) {
-      return sightedArriveStep(reading, rates);
+    } else if (anchor.isRetestDue(reading)) {
+      retestReturn(reading);
+      return 0.0;
     } else if (reading.hasBlindCorner()) {
       return isBackingOff() ? holdOrAudit(reading) : armStarvationProbe(reading);
-    } else if (sightedVetoTriggered(reading, rates)) {
-      return sightedHoldStep(reading, rates);
+    } else if (anchor.vetoTriggered(reading, rates)) {
+      return strideHome(reading);
     } else if (auditClock.isDue()) {
       return armEquilibriumAudit(reading);
     } else if (anchor.held) {
@@ -314,116 +297,22 @@ final class WindowClimber {
     return step.commit(stride);
   }
 
-  /**
-   * The guard rail's veto with a direction probe. A sustained, noise-cleared shortfall against
-   * the anchor's rate arms a hold instead of the retreat: the window stands still for
-   * SIGHTED_HOLD_SAMPLES while the goal metric re-samples, and only a hold that expires still in
-   * shortfall commits the return. A recovery during the hold cancels it in sightedHoldStep. The
-   * trigger sample is the hold's first sample.
-   */
-  private boolean sightedVetoTriggered(Reading reading, Rates rates) {
-    boolean shortfall = anchor.isAwayFrom(reading.windowMax, reading.band)
-        && (rates.smoothed < (anchor.rate - rates.vetoMargin()));
-    if (!shortfall) {
-      sightedShortfallStreak = 0;
-      return false;
-    }
-    sightedShortfallStreak++;
-    if (sightedShortfallStreak < Anchor.VETO_STREAK) {
-      return false;
-    }
-    sightedShortfallStreak = 0;
-    sightedHoldLeft = SIGHTED_HOLD_SAMPLES;
-    return true;
-  }
-
-  /**
-   * Whether a veto's direction probe is sampling its hold. An anchor discarded mid-hold (a real
-   * shift's stand-down) cancels the probe, so that sample routes as any other stood-down sample.
-   */
-  private boolean sightedHoldActive() {
-    if (sightedHoldLeft == 0) {
-      return false;
-    }
-    if (!anchor.isPlanted()) {
-      sightedHoldLeft = 0;
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * One direction-probe sample. The retreat stays uncommitted while the goal metric re-samples.
-   * A recovery to within the veto margin of the claim shows the veto chased a noise streak: the
-   * anchor is re-planted where the window stands and the retreat is cancelled. A hold that
-   * expires in shortfall commits the return: the claim is frozen for the arrival retest, and the
-   * first stride is taken.
-   */
-  private double sightedHoldStep(Reading reading, Rates rates) {
-    sightedHoldLeft--;
-    if (rates.smoothed >= (anchor.rate - rates.vetoMargin())) {
-      sightedHoldLeft = 0;
-      anchor.plant(reading.windowMax, rates.smoothed);
-      return 0.0;
-    }
-    if (sightedHoldLeft > 0) {
-      return 0.0;
-    }
-    sightedArriveClaim = anchor.rate;
-    sightedArrivePending = true;
-    anchor.beginReturn();
-    return strideHome(reading);
-  }
-
-  /**
-   * Whether a committed retreat awaits its arrival retest. The return itself runs under the
-   * shipped branch; once it ends on the anchor, the retest arms. A return that ends away from the
-   * anchor has nothing to re-test, and an anchor discarded meanwhile (a real shift's stand-down)
-   * cancels the retest.
-   */
-  private boolean sightedArriveActive(Reading reading) {
-    if (!sightedArrivePending || anchor.returning) {
-      return false;
-    }
-    if (!anchor.isAt(reading.windowMax, reading.band)) {
-      // Clear the settle too: a leftover count would shorten the next retest's settle window
-      sightedArrivePending = false;
-      sightedArriveLeft = 0;
-      return false;
-    }
-    if (sightedArriveLeft == 0) {
-      sightedArriveLeft = SIGHTED_ARRIVE_SETTLE;
-    }
-    return true;
-  }
-
-  /**
-   * The arrival retest of a committed retreat. The probe's hold spreads the retreat's arrival
-   * drop across its own samples, so the one-sample swing that stands a stale claim down can land
-   * under the restart threshold while the claim is still wrong. Settle SIGHTED_ARRIVE_SETTLE
-   * samples on the anchor, then test the claim frozen at the commit against the settled rate: a
-   * position that still earns its claim keeps it, and one fallen short of it is stood down
-   * exactly as a crash-scale shift would, goal metric included. The claim is frozen because the
-   * on-anchor re-sync decays it into the very shortfall being tested.
-   */
-  private double sightedArriveStep(Reading reading, Rates rates) {
-    sightedArriveLeft--;
-    if (sightedArriveLeft > 0) {
-      return 0.0;
-    }
-    sightedArrivePending = false;
-    if (rates.smoothed >= (sightedArriveClaim - rates.vetoMargin())) {
-      return 0.0;
-    }
-    if (anchor.standDown(reading)) {
-      rates.reset();
-    }
-    return 0.0;
-  }
-
   /** Returns a capped stride of a return towards the anchor. */
   private double strideHome(Reading reading) {
     return step.commit(anchor.strideHome(reading));
+  }
+
+  /**
+   * Settles a completed return on the anchor and stands its claim down if the position no longer
+   * earns it. Arriving is not evidence for the claim that sent the window here: the arrival's own
+   * drop can fall under the crash-scale threshold while the claim is still a past regime's.
+   */
+  private void retestReturn(Reading reading) {
+    if (anchor.retestFails(rates) && anchor.standDown(reading)) {
+      // the regime that earned the discarded claim also produced the reference it was measured
+      // against, so the goal metric re-learns from here
+      rates.reset();
+    }
   }
 
   /** Whether the starvation machine is still serving the refractory the last undo imposed. */
@@ -1528,17 +1417,21 @@ final class WindowClimber {
    * <p>
    * A shield lives and dies with the park it protects ({@link #park}/{@link #hold}/{@link #release}
    * are its only writers), a park defends only a planted anchor ({@link #discard} takes the hold
-   * with it), and a return implies its park.
+   * and the retest with it), and a return implies its park and the retest that judges it.
    */
   static final class Anchor {
     /** The consecutive shortfall samples that sustain a guard-rail veto. */
     static final int VETO_STREAK = 4;
     /** The samples a veto's return may take before it settles where it stands. */
     static final int VETO_RETURN_BUDGET = 8;
+    /** The samples a returned window settles on the anchor before its claim is re-tested. */
+    static final int RETEST_SETTLE = 2;
 
     int shortfallStreak;
+    double retestClaim;
     boolean returning;
     int returnLeft;
+    int settleLeft;
     int freshLeft;
     boolean held;
     long window;
@@ -1556,10 +1449,14 @@ final class WindowClimber {
       discard();
     }
 
-    /** Forgets the position. A discarded anchor cannot be defended, so the hold goes with it. */
+    /**
+     * Forgets the position. A discarded anchor cannot be defended and has no claim left to prove,
+     * so the hold and any pending retest go with it.
+     */
     void discard() {
-      window = -1;
       release();
+      endRetest();
+      window = -1;
     }
 
     /** Whether a position is remembered at all. */
@@ -1678,9 +1575,14 @@ final class WindowClimber {
       return discarded;
     }
 
-    /** Begins a veto's return: the hold is armed and the strides back are budgeted. */
+    /**
+     * Begins a veto's return: the hold is armed, the strides back are budgeted, and the claim the
+     * return sets out for is frozen for the retest on arrival.
+     */
     void beginReturn() {
       returnLeft = VETO_RETURN_BUDGET;
+      settleLeft = RETEST_SETTLE;
+      retestClaim = rate;
       returning = true;
       hold();
     }
@@ -1701,6 +1603,40 @@ final class WindowClimber {
     /** Ends the return, wherever it reached. */
     void endReturn() {
       returning = false;
+    }
+
+    /**
+     * Whether a return has ended on the anchor with the claim it set out for still to be judged. A
+     * return that settled short of the anchor never reached the position its claim describes.
+     */
+    boolean isRetestDue(Reading r) {
+      if ((retestClaim < 0) || returning) {
+        return false;
+      } else if (!isAt(r.windowMax, r.band)) {
+        endRetest();
+        return false;
+      }
+      return true;
+    }
+
+    /**
+     * Spends one settle sample and, on the last, returns whether the position fell short of the
+     * claim that brought the window here. The claim is the one frozen at the return's start: the
+     * on-anchor re-sync decays the live claim into the very shortfall being tested.
+     */
+    boolean retestFails(Rates rates) {
+      if (--settleLeft > 0) {
+        return false;
+      }
+      double claimed = retestClaim;
+      endRetest();
+      return rates.smoothed < (claimed - rates.vetoMargin());
+    }
+
+    /** Ends the retest, judged or abandoned. */
+    void endRetest() {
+      retestClaim = -1;
+      settleLeft = 0;
     }
   }
 
