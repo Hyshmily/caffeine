@@ -3061,6 +3061,15 @@ window. The cancel branch clears the counter too. The chain never fired in the m
 (every commit completed the full retest), and the fix re-verified bit-identical on all 53 seeded
 runs; a unit test pins the cancelled settle against shortening the next one.
 
+*Post-review fix (the hold).* The hold's cancel for a mid-hold stand-down first lived in the step:
+the swing sample that stood the anchor down returned nothing and sat idle, where every other
+stood-down sample routes, and a same-sample blind corner would have skipped its probe arming. The
+cancel moved into the hold predicate, so the probe ends where the claim dies and that sample
+routes as any other stood-down sample; the step's guard became dead code and went, since the
+router's two entries to it are provably planted (the hold predicate itself, and the veto fire,
+which needs a window measurably off a planted anchor). A unit test pins the swing sample against
+the same swing without a hold.
+
 ## 7.1 Release readiness (measured 2026-08-05; the whole battery anchored)
 
 Every gate row now has an LRU and a static-ceiling anchor

@@ -2099,6 +2099,36 @@ final class WindowClimberTest {
     assertThat(climber.anchor.isPlanted()).isFalse();
   }
 
+  @Test
+  void guardRail_sightedHold_standDownMidHold_routesTheSwingSample() {
+    // a crash-scale swing that discards the anchor mid-hold ends the probe where it stands: the
+    // claim the hold is judging is gone, so the swing sample routes as any other stood-down
+    // sample instead of sitting out one idle sample behind the stale hold
+    var held = seededShortfall();
+    var free = seededShortfall();
+    held.auditClock.waitSamples = AUDIT_WAIT_INITIAL;
+    free.auditClock.waitSamples = AUDIT_WAIT_INITIAL;
+    for (int i = 0; i < VETO_STREAK; i++) {
+      free.sightedShortfallStreak = 0; // the control never arms a hold
+      steadySample(held, /* windowMax= */ 1500, /* hitRate= */ 0.66);
+      steadySample(free, /* windowMax= */ 1500, /* hitRate= */ 0.66);
+    }
+    assertThat(held.sightedHoldLeft).isEqualTo(1); // the trigger sample consumed one hold sample
+
+    // a crash-scale swing at the anchor's position, its hits skewed so the fall-through's steer
+    // is decisive (an evenly spread sample would steer by a fraction of an entry)
+    long heldAdjustment = sample(held, /* windowMax= */ 2000,
+        /* windowHits= */ 5, /* mainHits= */ 540, /* misses= */ 455);
+    long freeAdjustment = sample(free, /* windowMax= */ 2000,
+        /* windowHits= */ 5, /* mainHits= */ 540, /* misses= */ 455);
+
+    assertThat(held.sightedHoldLeft).isEqualTo(0);
+    assertThat(held.anchor.isPlanted()).isFalse();
+    assertThat(held.anchor.held).isFalse();
+    assertThat(heldAdjustment).isEqualTo(freeAdjustment);
+    assertThat(heldAdjustment).isNotEqualTo(0); // the sample steered rather than idled
+  }
+
   /**
    * A climber whose anchor claims 0.70 at 2000 while the live smoothed rate runs 0.66, with the
    * deviation estimate settled so the margin floor binds (the cold-start seed would otherwise

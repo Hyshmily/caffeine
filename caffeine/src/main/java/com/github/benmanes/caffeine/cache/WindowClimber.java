@@ -337,9 +337,19 @@ final class WindowClimber {
     return true;
   }
 
-  /** Whether a veto's direction probe is sampling its hold. */
+  /**
+   * Whether a veto's direction probe is sampling its hold. An anchor discarded mid-hold (a real
+   * shift's stand-down) cancels the probe, so that sample routes as any other stood-down sample.
+   */
   private boolean sightedHoldActive() {
-    return sightedHoldLeft > 0;
+    if (sightedHoldLeft == 0) {
+      return false;
+    }
+    if (!anchor.isPlanted()) {
+      sightedHoldLeft = 0;
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -350,10 +360,6 @@ final class WindowClimber {
    * first stride is taken.
    */
   private double sightedHoldStep(Reading reading, Rates rates) {
-    if (!anchor.isPlanted()) {
-      sightedHoldLeft = 0;
-      return 0.0;
-    }
     sightedHoldLeft--;
     if (rates.smoothed >= (anchor.rate - rates.vetoMargin())) {
       sightedHoldLeft = 0;
