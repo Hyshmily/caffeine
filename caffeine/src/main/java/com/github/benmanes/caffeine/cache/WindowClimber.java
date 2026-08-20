@@ -1561,13 +1561,17 @@ final class WindowClimber {
      * Stands the layer down after a crash-scale swing, returning whether the claim was discarded.
      * A claim tested at its own position and found wrong is discarded, but a crash far from the
      * anchor is typically the controller's own retreat crossing a band edge, so the reference
-     * survives there. The audit clock is untouched either way: stillness is a property of the
-     * position, not of the rate.
+     * survives there. A swing that interrupts a return abandons its retest as well, since the
+     * frozen claim is judged where the return lands, and an interrupted return does not land. The
+     * audit clock is untouched either way: stillness is a property of the position, not of the
+     * rate.
      */
     boolean standDown(Reading r) {
       boolean discarded = isAt(r.windowMax, r.band);
       if (discarded) {
         discard();
+      }else {
+        endRetest();
       }
       release();
       endReturn();

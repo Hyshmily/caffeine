@@ -3045,7 +3045,18 @@ cancels. The hold is dead (§5): it is a net −0.37 on its own and is the sole 
 proposal's three negative seeds, because spreading the arrival drop across its own samples is what
 puts that drop under the crash-scale threshold in the first place. Its cancel branch never fired
 in any measured run.
-
+A post-landing review found one exit the retest's cleanup missed. `standDown`'s far-from-anchor
+branch ended an interrupted return without ending its retest, leaving the frozen claim pending on
+a surviving anchor. The pending claim abandons itself on the next sample in the ordinary case,
+since the window stands away from the anchor, but `track` runs between the stand-down and that
+check, and a swing that re-plants the anchor at the window puts the position back on the anchor,
+where the stale claim settles and judges the new anchor against a past regime's rate. The reach
+is narrow. The smoothed rate must already sit above the claim when the swing lands (an EMA pair
+cannot cross both the claim and its deviation-priced margin on the swing sample itself), and the
+settle's decline must stay under the crash-scale threshold, or the ordinary stand-down discards
+first; the discard it does produce is one a clean retest of the new claim would also have made,
+so the cost is an uninvited reset rather than a wrong verdict. Both stand-down branches now end
+the retest, and a unit test interrupts a multi-stride return with a re-planting swing.
 Their own iteration log carried one shape worth checking here, since the machine is a port of this
 one: a walk budget enforced on only one of two verdict branches, which an alternating walk outlives
 by half again. Checked and clean, in both directions: `auditEnding` and `starvationEnding` each
